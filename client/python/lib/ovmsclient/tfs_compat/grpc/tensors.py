@@ -53,10 +53,6 @@ TENSOR_TO_NP_MAP = {v.TensorDtype: k for k, v in NP_TO_TENSOR_MAP.items()}
 TENSOR_DTYPE_TO_PROTOFIELD = {v.TensorDtype: v.TensorProtoField for v in NP_TO_TENSOR_MAP.values()}
 
 
-def _is_array_like(value):
-    return isinstance(value, (list, np.ndarray))
-
-
 def _is_shape_valid(shape):
     if not isinstance(shape, (list, tuple)):
         return False
@@ -92,6 +88,7 @@ def _get_dense_dimensions(values):
 
 def _is_bytes_shape_valid(inferred_shape, tensor_values):
     return (len(inferred_shape) > 1 or (len(tensor_values.shape) > 1 and inferred_shape == []))
+
 
 @ovmsclient_export("make_tensor_proto", grpcclient="make_tensor_proto")
 def make_tensor_proto(values, dtype=None, shape=None):
@@ -146,20 +143,30 @@ def make_tensor_proto(values, dtype=None, shape=None):
         raise TypeError('shape type should be list or tuple with unsigned integers')
 
     # create numpy ndarray from values and find its dtype if not provided
-    if _is_array_like(values):
-        if isinstance(values, list):
-            dense_dimensions = _get_dense_dimensions(values)
-            tensor_values = np.array(values)
-            if(list(tensor_values.shape) != dense_dimensions):
-                raise ValueError(f'argument must be a dense tensor: {values} - got shape '
-                                 f'{list(tensor_values.shape)}, but wanted {dense_dimensions}')
-        else:
-            tensor_values = values
+    if isinstance(values, np.ndarray):
+        tensor_values = values
+    elif isinstance(values, list):
+        dense_dimensions = _get_dense_dimensions(values)
+        tensor_values = np.array(values)
+        if(list(tensor_values.shape) != dense_dimensions):
+            raise ValueError(f'argument must be a dense tensor: {values} - got shape '
+                             f'{list(tensor_values.shape)}, but wanted {dense_dimensions}')
     elif np.isscalar(values):
-            tensor_values = np.array([values])
+        tensor_values = np.array([values])
     else:
         raise TypeError("values type should be (list, np.ndarray, scalar), but is "
                         f"{type(values).__name__}")
+
+    if not isinstance(values, np.ndarray):
+        # python/numpy default float type is float64. We prefer float32 instead.
+        if (tensor_values.dtype == np.float64) and dtype is None:
+            tensor_values = tensor_values.astype(np.float32)
+        # python/numpy default int type is int64. We prefer int32 instead.
+        elif (tensor_values.dtype == np.int64) and dtype is None:
+            downcasted_array = tensor_values.astype(np.int32)
+            # Do not down cast if it leads to precision loss.
+            if np.array_equal(downcasted_array, tensor_values):
+                tensor_values = downcasted_array
 
     if dtype is None:
         tensor_type = NP_TO_TENSOR_MAP.get(tensor_values.dtype.type)
@@ -204,6 +211,7 @@ def make_tensor_proto(values, dtype=None, shape=None):
         tensor_proto = TensorProto(dtype=dtype, tensor_shape=tensor_shape,
                                    tensor_content=tensor_values.tobytes())
     return tensor_proto
+
 
 @ovmsclient_export("make_ndarray", grpcclient="make_ndarray")
 def make_ndarray(tensor_proto):
